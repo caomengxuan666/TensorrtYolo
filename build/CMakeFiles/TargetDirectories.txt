@@ -1,5 +1,0 @@
-C:/Users/Administrator/source/repos/TensorrtYolo/build/CMakeFiles/edit_cache.dir
-C:/Users/Administrator/source/repos/TensorrtYolo/build/CMakeFiles/rebuild_cache.dir
-C:/Users/Administrator/source/repos/TensorrtYolo/build/TensorrtYolo/CMakeFiles/TensorrtYolo.dir
-C:/Users/Administrator/source/repos/TensorrtYolo/build/TensorrtYolo/CMakeFiles/edit_cache.dir
-C:/Users/Administrator/source/repos/TensorrtYolo/build/TensorrtYolo/CMakeFiles/rebuild_cache.dir
