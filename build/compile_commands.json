@@ -1,0 +1,8 @@
+[
+{
+  "directory": "C:/Users/Administrator/source/repos/TensorrtYolo/build",
+  "command": "C:\\PROGRA~1\\MICROS~3\\2022\\Preview\\VC\\Tools\\MSVC\\1444~1.352\\bin\\Hostx64\\x64\\cl.exe  /nologo /TP -I\"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.9\\include\" -external:ID:\\vcpkg\\installed\\x64-windows\\include\\opencv4 -external:W0 /DWIN32 /D_WINDOWS /W3 /GR /EHsc /MDd /Ob0 /Od /RTC1 -std:c++20 -ZI /FoTensorrtYolo\\CMakeFiles\\TensorrtYolo.dir\\TensorrtYolo.cpp.obj /FdTensorrtYolo\\CMakeFiles\\TensorrtYolo.dir\\ /FS -c C:\\Users\\Administrator\\source\\repos\\TensorrtYolo\\TensorrtYolo\\TensorrtYolo.cpp",
+  "file": "C:\\Users\\Administrator\\source\\repos\\TensorrtYolo\\TensorrtYolo\\TensorrtYolo.cpp",
+  "output": "TensorrtYolo\\CMakeFiles\\TensorrtYolo.dir\\TensorrtYolo.cpp.obj"
+}
+]
