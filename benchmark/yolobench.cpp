@@ -1,24 +1,28 @@
-#include <benchmark/benchmark.h>
 #include <NvInfer.h>
-#include <cuda_runtime_api.h>
-#include <opencv2/opencv.hpp>
-#include <fstream>
-#include <iostream>
-#include <vector>
-#include <future>
 #include <algorithm>
-#include <execution>
-#include <mutex>
-#include <thread>
-#include <string>
+#include <benchmark/benchmark.h>
 #include <chrono>
+#include <cuda_runtime_api.h>
+#include <execution>
+#include <fstream>
+#include <future>
+#include <immintrin.h>
+#include <iostream>
+#include <mutex>
 #include <numeric>
+#include <omp.h>
+#include <opencv2/opencv.hpp>
+#include <string>
+#include <thread>
+#include <vector>
+
 
 using namespace nvinfer1;
 
 // Logger implementation
 class Logger : public ILogger {
-    void log(Severity severity, const char* msg) noexcept override {
+    void log(Severity severity, const char* msg) noexcept override
+    {
         if (severity <= Severity::kWARNING)
             std::cout << "[TensorRT] " << msg << std::endl;
     }
@@ -29,14 +33,17 @@ struct Detection {
     int class_id;
     float score;
     cv::Rect box;
-    bool operator<(const Detection& other) const {
+    bool operator<(const Detection& other) const
+    {
         return score > other.score;
     }
 };
 
 // NMS
-std::vector<Detection> nonMaximumSuppression(std::vector<Detection>& detections, float threshold) {
-    if (detections.empty()) return {};
+std::vector<Detection> nonMaximumSuppression(std::vector<Detection>& detections, float threshold)
+{
+    if (detections.empty())
+        return {};
     std::sort(std::execution::par, detections.begin(), detections.end());
     std::vector<float> areas;
     areas.reserve(detections.size());
@@ -46,12 +53,14 @@ std::vector<Detection> nonMaximumSuppression(std::vector<Detection>& detections,
     std::vector<bool> suppressed(detections.size(), false);
     std::vector<Detection> results;
     for (size_t i = 0; i < detections.size(); ++i) {
-        if (suppressed[i]) continue;
+        if (suppressed[i])
+            continue;
         results.push_back(detections[i]);
         std::for_each(std::execution::par, detections.begin() + i + 1, detections.end(),
             [&](const Detection& det_j) {
                 size_t j = &det_j - detections.data();
-                if (suppressed[j]) return;
+                if (suppressed[j])
+                    return;
                 const auto& a = detections[i].box;
                 const auto& b = det_j.box;
                 float xx1 = std::max(a.x, b.x);
@@ -62,48 +71,141 @@ std::vector<Detection> nonMaximumSuppression(std::vector<Detection>& detections,
                 float h = std::max(0.0f, yy2 - yy1);
                 float inter = w * h;
                 float ovr = inter / (areas[i] + areas[j] - inter);
-                if (ovr > threshold) suppressed[j] = true;
+                if (ovr > threshold)
+                    suppressed[j] = true;
             });
     }
     return results;
 }
 
 // Engine file async load
-std::future<std::vector<char>> loadEngineFileAsync(const std::string& engineFile) {
+std::future<std::vector<char>> loadEngineFileAsync(const std::string& engineFile)
+{
     return std::async(std::launch::async, [=] {
         std::ifstream file(engineFile, std::ios::binary);
-        if (!file) throw std::runtime_error("Failed to open engine file");
+        if (!file)
+            throw std::runtime_error("Failed to open engine file");
         return std::vector<char>((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-        });
+    });
 }
-
 
 // Preprocess
 void preprocessParallel(const cv::Mat& img, float* dst, int input_w, int input_h, float& scale, int& dw, int& dh) {
+    // 参数计算（不变）
     int w = img.cols, h = img.rows;
-    scale = std::min(input_w / (float)w, input_h / (float)h);
-    int new_w = int(w * scale), new_h = int(h * scale);
+    scale = std::min(input_w / static_cast<float>(w), input_h / static_cast<float>(h));
+    int new_w = static_cast<int>(w * scale);
+    int new_h = static_cast<int>(h * scale);
     dw = (input_w - new_w) / 2;
     dh = (input_h - new_h) / 2;
 
-    cv::Mat resized, padded(input_h, input_w, CV_8UC3, cv::Scalar(114, 114, 114));
+    // 1. 内存分配优化：对齐的临时缓冲区
+    cv::Mat padded(input_h, input_w, CV_8UC3, cv::Scalar(114, 114, 114));
+    cv::Mat resized;
     cv::resize(img, resized, cv::Size(new_w, new_h));
     resized.copyTo(padded(cv::Rect(dw, dh, new_w, new_h)));
 
-    // 使用 C++17 并行算法处理每个通道
-    for (int c = 0; c < 3; ++c) {
-        std::for_each(std::execution::par, padded.begin<cv::Vec3b>(), padded.end<cv::Vec3b>(),
-            [=, &padded](cv::Vec3b& pixel) {
-                int y = &pixel - padded.ptr<cv::Vec3b>(0);  // 计算当前行
-                int x = (y % input_h);                     // 计算当前列
-                y /= input_h;
-                dst[c * input_h * input_w + y * input_w + x] = pixel[c] / 255.0f;
-            });
+    // 2. 数据布局声明（SoA结构）
+    const float norm_factor = 1.0f / 255.0f;
+    const int total_pixels = input_w * input_h;
+    float* dst_b = dst;                  // B通道连续存储
+    float* dst_g = dst_b + total_pixels; // G通道
+    float* dst_r = dst_g + total_pixels; // R通道
+
+    // 3. 线程绑定（Linux环境）
+    #if defined(__linux__) || defined(__APPLE__)
+    #pragma omp parallel
+    {
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);
+        CPU_SET(omp_get_thread_num(), &cpuset);
+        sched_setaffinity(0, sizeof(cpuset), &cpuset);
+    }
+    #endif
+
+    // 4. 主处理循环（AVX2 + ILP）
+    #pragma omp parallel for schedule(dynamic, 64)  // 动态调度64行/块
+    for (int y = 0; y < input_h; ++y) {
+        const uchar* src_row = padded.ptr<uchar>(y);
+        float* dst_b_row = dst_b + y * input_w;
+        float* dst_g_row = dst_g + y * input_w;
+        float* dst_r_row = dst_r + y * input_w;
+
+        int x = 0;
+        // AVX2处理（每次处理32像素，4组AVX2寄存器）
+        #ifdef __AVX2__
+        for (; x <= input_w - 32; x += 32) {
+            // 加载96字节（32像素x3通道）
+            __m256i bgr0 = _mm256_loadu_si256((__m256i*)(src_row + x * 3));
+            __m256i bgr1 = _mm256_loadu_si256((__m256i*)(src_row + x * 3 + 32));
+            __m256i bgr2 = _mm256_loadu_si256((__m256i*)(src_row + x * 3 + 64));
+            __m256i bgr3 = _mm256_loadu_si256((__m256i*)(src_row + x * 3 + 96));
+            __m256i bgr4 = _mm256_loadu_si256((__m256i*)(src_row + x * 3 + 128));
+            __m256i bgr5 = _mm256_loadu_si256((__m256i*)(src_row + x * 3 + 160));
+
+            // 解包B/G/R通道（ILP展开）
+            __m256i b0 = _mm256_cvtepu8_epi32(_mm256_castsi256_si128(bgr0));
+            __m256i b1 = _mm256_cvtepu8_epi32(_mm256_castsi256_si128(bgr1));
+            __m256i b2 = _mm256_cvtepu8_epi32(_mm256_castsi256_si128(bgr2));
+            __m256i b3 = _mm256_cvtepu8_epi32(_mm256_castsi256_si128(bgr3));
+
+            __m256i g0 = _mm256_cvtepu8_epi32(_mm256_extracti128_si256(bgr0, 1));
+            __m256i g1 = _mm256_cvtepu8_epi32(_mm256_extracti128_si256(bgr1, 1));
+            __m256i g2 = _mm256_cvtepu8_epi32(_mm256_extracti128_si256(bgr2, 1));
+            __m256i g3 = _mm256_cvtepu8_epi32(_mm256_extracti128_si256(bgr3, 1));
+
+            __m256i r0 = _mm256_cvtepu8_epi32(_mm256_castsi256_si128(bgr4));
+            __m256i r1 = _mm256_cvtepu8_epi32(_mm256_castsi256_si128(bgr5));
+            __m256i r2 = _mm256_cvtepu8_epi32(_mm256_extracti128_si256(bgr4, 1));
+            __m256i r3 = _mm256_cvtepu8_epi32(_mm256_extracti128_si256(bgr5, 1));
+
+            // 转换为浮点并归一化（FMA优化）
+            __m256 norm = _mm256_set1_ps(norm_factor);
+            __m256 fb0 = _mm256_mul_ps(_mm256_cvtepi32_ps(b0), norm);
+            __m256 fb1 = _mm256_mul_ps(_mm256_cvtepi32_ps(b1), norm);
+            __m256 fb2 = _mm256_mul_ps(_mm256_cvtepi32_ps(b2), norm);
+            __m256 fb3 = _mm256_mul_ps(_mm256_cvtepi32_ps(b3), norm);
+
+            __m256 fg0 = _mm256_mul_ps(_mm256_cvtepi32_ps(g0), norm);
+            __m256 fg1 = _mm256_mul_ps(_mm256_cvtepi32_ps(g1), norm);
+            __m256 fg2 = _mm256_mul_ps(_mm256_cvtepi32_ps(g2), norm);
+            __m256 fg3 = _mm256_mul_ps(_mm256_cvtepi32_ps(g3), norm);
+
+            __m256 fr0 = _mm256_mul_ps(_mm256_cvtepi32_ps(r0), norm);
+            __m256 fr1 = _mm256_mul_ps(_mm256_cvtepi32_ps(r1), norm);
+            __m256 fr2 = _mm256_mul_ps(_mm256_cvtepi32_ps(r2), norm);
+            __m256 fr3 = _mm256_mul_ps(_mm256_cvtepi32_ps(r3), norm);
+
+            // 非对齐存储（保证兼容性）
+            _mm256_storeu_ps(dst_b_row + x, fb0);
+            _mm256_storeu_ps(dst_b_row + x + 8, fb1);
+            _mm256_storeu_ps(dst_b_row + x + 16, fb2);
+            _mm256_storeu_ps(dst_b_row + x + 24, fb3);
+
+            _mm256_storeu_ps(dst_g_row + x, fg0);
+            _mm256_storeu_ps(dst_g_row + x + 8, fg1);
+            _mm256_storeu_ps(dst_g_row + x + 16, fg2);
+            _mm256_storeu_ps(dst_g_row + x + 24, fg3);
+
+            _mm256_storeu_ps(dst_r_row + x, fr0);
+            _mm256_storeu_ps(dst_r_row + x + 8, fr1);
+            _mm256_storeu_ps(dst_r_row + x + 16, fr2);
+            _mm256_storeu_ps(dst_r_row + x + 24, fr3);
+        }
+        #endif
+
+        // 5. 剩余像素处理（标量）
+        for (; x < input_w; ++x) {
+            int src_idx = x * 3;
+            dst_b_row[x] = src_row[src_idx] * norm_factor;
+            dst_g_row[x] = src_row[src_idx + 1] * norm_factor;
+            dst_r_row[x] = src_row[src_idx + 2] * norm_factor;
+        }
     }
 }
-
 // Benchmark: 完整推理流程+详细阶段耗时
-static void BM_TensorRT_FullPipeline(benchmark::State& state) {
+static void BM_TensorRT_FullPipeline(benchmark::State& state)
+{
     const std::string engineFile = "best.engine";
     const std::string imageFile = "test_image.png";
     constexpr int INPUT_W = 640, INPUT_H = 640;
@@ -120,7 +222,8 @@ static void BM_TensorRT_FullPipeline(benchmark::State& state) {
     if (!loaded) {
         engineData = loadEngineFileAsync(engineFile).get();
         img = cv::imread(imageFile);
-        if (img.empty()) throw std::runtime_error("Image not found!");
+        if (img.empty())
+            throw std::runtime_error("Image not found!");
         runtime = createInferRuntime(gLogger);
         engine = runtime->deserializeCudaEngine(engineData.data(), engineData.size());
         context = engine->createExecutionContext();
@@ -131,8 +234,10 @@ static void BM_TensorRT_FullPipeline(benchmark::State& state) {
     std::string inputName, outputName;
     for (int i = 0; i < engine->getNbIOTensors(); ++i) {
         const char* name = engine->getIOTensorName(i);
-        if (engine->getTensorIOMode(name) == TensorIOMode::kINPUT) inputName = name;
-        else outputName = name;
+        if (engine->getTensorIOMode(name) == TensorIOMode::kINPUT)
+            inputName = name;
+        else
+            outputName = name;
     }
 
     size_t inputSize = 1 * 3 * INPUT_H * INPUT_W * sizeof(float);
@@ -151,7 +256,8 @@ static void BM_TensorRT_FullPipeline(benchmark::State& state) {
         auto t0 = std::chrono::high_resolution_clock::now();
 
         // 预处理
-        float scale; int dw, dh;
+        float scale;
+        int dw, dh;
         std::vector<float> inputData(3 * INPUT_H * INPUT_W);
         auto t1 = std::chrono::high_resolution_clock::now();
         preprocessParallel(img, inputData.data(), INPUT_W, INPUT_H, scale, dw, dh);
@@ -195,7 +301,8 @@ static void BM_TensorRT_FullPipeline(benchmark::State& state) {
                     float w = outputData[2 * NUM_BOXES + i];
                     float h = outputData[3 * NUM_BOXES + i];
                     float score = outputData[4 * NUM_BOXES + i];
-                    if (score < CONF_THRESH) continue;
+                    if (score < CONF_THRESH)
+                        continue;
                     float x1 = (cx - w / 2 - dw) / scale;
                     float y1 = (cy - h / 2 - dh) / scale;
                     float x2 = (cx + w / 2 - dw) / scale;
@@ -204,16 +311,15 @@ static void BM_TensorRT_FullPipeline(benchmark::State& state) {
                     y1 = std::max(0.f, std::min(y1, float(img.rows - 1)));
                     x2 = std::max(0.f, std::min(x2, float(img.cols - 1)));
                     y2 = std::max(0.f, std::min(y2, float(img.rows - 1)));
-                    local_dets.push_back({
-                        0, score,
-                        cv::Rect(cv::Point(int(x1), int(y1)), cv::Point(int(x2), int(y2)))
-                        });
+                    local_dets.push_back({ 0, score,
+                        cv::Rect(cv::Point(int(x1), int(y1)), cv::Point(int(x2), int(y2))) });
                 }
                 std::lock_guard<std::mutex> lock(mtx);
                 detections.insert(detections.end(), local_dets.begin(), local_dets.end());
-                }));
+            }));
         }
-        for (auto& f : detection_futures) f.get();
+        for (auto& f : detection_futures)
+            f.get();
         auto t6 = std::chrono::high_resolution_clock::now();
 
         // NMS
@@ -239,7 +345,7 @@ static void BM_TensorRT_FullPipeline(benchmark::State& state) {
 
         // 每轮打印
         std::cout << "[BENCH] preprocess: " << pre << " ms, H2D: " << h2d << " ms, infer: " << infer
-            << " ms, D2H: " << d2h << " ms, post: " << post << " ms, NMS: " << nms << " ms" << std::endl;
+                  << " ms, D2H: " << d2h << " ms, post: " << post << " ms, NMS: " << nms << " ms" << std::endl;
 
         benchmark::ClobberMemory();
     }

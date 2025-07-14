@@ -36,7 +36,16 @@ file(COPY ${CMAKE_SOURCE_DIR}/model/best.onnx DESTINATION ${CMAKE_CURRENT_BINARY
 # 复制image
 file(COPY ${CMAKE_SOURCE_DIR}/images DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
 
-add_executable(TensorrtYoloBench yolobench.cpp)
+add_executable(TensorrtYoloBench yolobench.cpp
+${CMAKE_SOURCE_DIR}/TensorrtYolo/src/TensorrtYoloDetectorAPI.cpp
+${CMAKE_SOURCE_DIR}/TensorrtYolo/include/TensorrtYoloDetectorAPI.h
+)
+
+target_include_directories(TensorrtYoloBench
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/TensorrtYolo/include
+        ${CMAKE_SOURCE_DIR}/TensorrtYolo/src
+)
 
 target_link_libraries(TensorrtYoloBench
     PRIVATE
