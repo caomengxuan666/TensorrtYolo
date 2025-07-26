@@ -1,7 +1,7 @@
 ﻿# CMakeList.txt: 顶层 CMake 项目文件，在此处执行全局配置
 # 并包含子项目。
 #
-cmake_minimum_required (VERSION 3.8)
+cmake_minimum_required (VERSION 3.29)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX STANDARD ON)
@@ -14,6 +14,7 @@ endif()
 
 project ("TensorrtYolo")
 
+set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake")
 set(VCPKG_ROOT D:/vcpkg)
 set(CMAKE_TOOLCHAIN_FILE "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE STRING "")
 set(CMAKE_PREFIX_PATH "${VCPKG_ROOT}/installed/x64-windows/share" ${CMAKE_PREFIX_PATH})
@@ -26,6 +27,8 @@ set(TENSORRT_RUNTIME ${CUDA_DIR}/bin)
 include_directories(${TENSORRT_INCLUDE})
 link_directories(${TENSORRT_LIB})
 
+include_directories(${CMAKE_SOURCE_DIR}/third-party)
+
 find_package(OpenCV CONFIG REQUIRED)
 
 find_library(CUDART_LIB
@@ -34,6 +37,8 @@ find_library(CUDART_LIB
 )
 if (NOT CUDART_LIB)
     message(FATAL_ERROR "Could NOT find cudart.lib in ${TENSORRT_LIB}")
+else()
+    message(STATUS "Found CUDART library: ${CUDART_LIB}")
 endif()
 
 find_library(NVINFER_LIB NAMES nvinfer_10 PATHS ${TENSORRT_LIB})
@@ -54,4 +59,9 @@ endif ()
 # 包含子项目。
 add_subdirectory ("TensorrtYolo")
 add_subdirectory ("benchmark")
-add_subdirectory("samples")
+add_subdirectory ("samples")
+
+set(CMAKE_INSTALL_PREFIX "${PROJECT_BINARY_DIR}/install" CACHE PATH "Installation directory")
+
+# 开启 CPack 支持（虽然不用于打包，但会帮助我们处理依赖）
+include(InstallRequiredSystemLibraries)

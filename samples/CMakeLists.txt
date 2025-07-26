@@ -35,12 +35,16 @@ target_link_libraries(Infersample PUBLIC
         nvonnxparser_10
 )
 
-## 自动复制 TensorrtYolo.dll 到 Infersample 输出目录
-#if(WIN32 AND NOT UNIX)
-#    add_custom_command(
-#        TARGET Infersample POST_BUILD
-#        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-#            $<TARGET_FILE:TensorrtYolo>
-#           $<TARGET_FILE_DIR:Infersample>
-#    )
-#endif()
+# 安装可执行文件
+install(TARGETS Infersample
+    RUNTIME DESTINATION bin)
+
+# 安装 model/
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/model/
+    DESTINATION model
+    FILES_MATCHING PATTERN "*.engine")
+
+# 安装 images/
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/images/
+    DESTINATION images
+    FILES_MATCHING PATTERN "*.jpg" PATTERN "*.png")
